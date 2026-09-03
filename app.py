@@ -47,7 +47,11 @@ ultima_fila, historico, mape_familia, backtest = cargar_datos()
 
 @st.cache_data
 def calcular_predicciones_todos_los_productos(_modelos, _features, _feature_cat, _ultima_fila):
-    """Prediccion de % de crecimiento y produccion para los 3 horizontes, para TODOS los productos."""
+    """Prediccion de % de crecimiento y produccion para los 3 horizontes, para TODOS los productos.
+    Ademas marca predicciones estadisticamente anomalas: cuando la magnitud del crecimiento
+    predicho supera en mucho la volatilidad historica normal de ESE producto especifico -- esto
+    puede pasar incluso en familias con buena confianza promedio (el MAPE de familia es un
+    agregado, no protege contra un caso individual inestable)."""
     resultados = []
     X_todos = _ultima_fila[_features + [_feature_cat]].copy()
     X_todos[_feature_cat] = X_todos[_feature_cat].astype("category")
@@ -61,10 +65,15 @@ def calcular_predicciones_todos_los_productos(_modelos, _features, _feature_cat,
             "Item": _ultima_fila["Item"].values,
             "Familia": _ultima_fila["Familia"].values,
             "Production_t": _ultima_fila["Production_t"].values,
+            "Vol_cv5": _ultima_fila["Production_vol_cv5"].values,
             "Horizonte": f"t+{horizonte}",
             "pred_growth_pct": pred_growth,
         })
         df_h["Pred_Production"] = df_h["Production_t"] * (1 + df_h["pred_growth_pct"] / 100)
+        # Umbral de anomalia: la magnitud del crecimiento predicho supera 5x la volatilidad
+        # historica normal (coeficiente de variacion) de ese producto especifico
+        umbral = 5 * (df_h["Vol_cv5"].fillna(0) * 100)
+        df_h["Posible_anomalia"] = df_h["pred_growth_pct"].abs() > umbral.clip(lower=15)
         resultados.append(df_h)
 
     return pd.concat(resultados, ignore_index=True)
@@ -122,6 +131,8 @@ elif modo_vista == "Ranking de crecimiento":
     horizonte_ranking = st.sidebar.selectbox("Horizonte del ranking", ["t+1", "t+3", "t+5"], index=0)
     n_mostrar = st.sidebar.slider("Cuantos productos mostrar en cada extremo", 5, 20, 10)
     familias_filtro = st.sidebar.multiselect("Filtrar por familia (opcional)", familias_todas, default=[])
+    ocultar_anomalias = st.sidebar.checkbox("Ocultar predicciones estadisticamente anomalas", value=True,
+        help="Oculta productos cuya prediccion se aleja mucho de su propia volatilidad historica -- suelen ser inestabilidades puntuales del modelo, no tendencias reales.")
 
 elif modo_vista == "Cuadrante crecimiento vs confianza":
     horizonte_cuadrante = st.sidebar.selectbox("Horizonte", ["t+1", "t+3", "t+5"], index=0)
@@ -271,6 +282,13 @@ elif modo_vista == "Ranking de crecimiento":
     df_h = ranking_todos[ranking_todos["Horizonte"] == horizonte_ranking].copy()
     if familias_filtro:
         df_h = df_h[df_h["Familia"].isin(familias_filtro)]
+
+    n_anomalas = df_h["Posible_anomalia"].sum()
+    if ocultar_anomalias:
+        df_h = df_h[~df_h["Posible_anomalia"]]
+        if n_anomalas > 0:
+            st.caption(f"Se ocultaron {n_anomalas} productos con predicciones estadisticamente anomalas (desactiva el filtro en la barra lateral para verlas).")
+
     df_h = df_h.sort_values("pred_growth_pct", ascending=False)
 
     if len(df_h) == 0:
@@ -296,8 +314,8 @@ elif modo_vista == "Ranking de crecimiento":
 
         st.markdown("---")
         st.subheader("Tabla completa del ranking")
-        tabla_ranking = df_h[["Item", "Familia", "Production_t", "pred_growth_pct", "Pred_Production"]].copy()
-        tabla_ranking.columns = ["Producto", "Familia", "Produccion actual (t)", "Crecimiento predicho (%)", "Produccion predicha (t)"]
+        tabla_ranking = df_h[["Item", "Familia", "Production_t", "pred_growth_pct", "Pred_Production", "Posible_anomalia"]].copy()
+        tabla_ranking.columns = ["Producto", "Familia", "Produccion actual (t)", "Crecimiento predicho (%)", "Produccion predicha (t)", "¿Posible anomalia?"]
         tabla_ranking["Crecimiento predicho (%)"] = tabla_ranking["Crecimiento predicho (%)"].round(2)
         st.dataframe(tabla_ranking, use_container_width=True, hide_index=True)
         st.download_button(f"Descargar ranking {horizonte_ranking} (CSV)", tabla_ranking.to_csv(index=False).encode("utf-8"),
