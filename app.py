@@ -130,6 +130,11 @@ elif modo_vista == "Comparador de productos":
     productos_comparar = st.sidebar.multiselect(
         "Selecciona 2-3 productos", productos_todos, default=["Wheat", "Maize (corn)"]
     )
+    modo_escala = st.sidebar.radio(
+        "Escala del grafico",
+        ["Indice (base 100 = primer ano)", "Toneladas absolutas"],
+        help="Si comparas productos de volumenes muy distintos (ej. Wheat vs Almonds), usa Indice -- si no, los productos pequenos se ven aplastados contra el 0."
+    )
 
 st.sidebar.markdown("---")
 st.sidebar.markdown(
@@ -342,17 +347,33 @@ elif modo_vista == "Comparador de productos":
     if len(productos_comparar) < 2:
         st.info("Selecciona al menos 2 productos en la barra lateral para comparar.")
     else:
+        usar_indice = modo_escala.startswith("Indice")
+        if usar_indice:
+            st.caption(
+                "Cada serie se muestra como % respecto a su propio valor en el primer ano disponible "
+                "(base 100). Asi se pueden comparar tasas de crecimiento entre productos de volumenes "
+                "muy distintos (ej. Wheat, que produce cientos de millones de toneladas, vs Almonds, "
+                "que produce unos pocos millones) sin que el mas pequeno quede aplastado contra el 0."
+            )
+
         fig4, ax4 = plt.subplots(figsize=(11, 5))
         tabla_comparativa = []
         for item in productos_comparar:
             hist_item = historico[historico["Item"] == item].sort_values("Year")
-            ax4.plot(hist_item["Year"], hist_item["Production_t"], label=f"{item} (historico)", linewidth=2)
-
             fila_i, _, pred_i = predecir_producto(item)
             anios_fut = [int(fila_i["Year"]) + h for h in [1, 3, 5]]
             valores_fut = [pred_i[h]["produccion"] for h in [1, 3, 5]]
-            ax4.plot([int(fila_i["Year"])] + anios_fut, [fila_i["Production_t"]] + valores_fut,
-                     linestyle="--", marker="o")
+
+            if usar_indice:
+                base = hist_item["Production_t"].iloc[0]
+                y_hist = hist_item["Production_t"] / base * 100
+                y_fut = [fila_i["Production_t"] / base * 100] + [v / base * 100 for v in valores_fut]
+            else:
+                y_hist = hist_item["Production_t"]
+                y_fut = [fila_i["Production_t"]] + valores_fut
+
+            linea, = ax4.plot(hist_item["Year"], y_hist, label=f"{item} (historico)", linewidth=2)
+            ax4.plot([int(fila_i["Year"])] + anios_fut, y_fut, linestyle="--", marker="o", color=linea.get_color())
 
             for h in [1, 3, 5]:
                 tabla_comparativa.append({
@@ -361,7 +382,8 @@ elif modo_vista == "Comparador de productos":
                     "Crecimiento (%)": round(pred_i[h]["growth_pct"], 2),
                 })
 
-        ax4.set_xlabel("Ano"); ax4.set_ylabel("Produccion (toneladas)")
+        ax4.set_xlabel("Ano")
+        ax4.set_ylabel("Indice (base 100 = primer ano)" if usar_indice else "Produccion (toneladas)")
         ax4.set_title("Comparacion historica y predicha")
         ax4.legend()
         st.pyplot(fig4)
